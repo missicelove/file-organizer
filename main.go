@@ -22,7 +22,18 @@ func main() {
 	token := flag.String("token", "", "访问令牌（默认随机生成）")
 	webDir := flag.String("webdir", "", "开发用：从该目录读取界面文件")
 	logFile := flag.String("log", "", "操作日志文件路径（默认保存在用户的应用数据目录中）")
+	trashDir := flag.String("trashdir", "", "开发用：删除时移到该目录，而不是系统回收站")
 	flag.Parse()
+	if *trashDir != "" {
+		trashFunc = func(paths []string) error {
+			for _, p := range paths {
+				if err := os.Rename(p, uniquePath(*trashDir, filepath.Base(p), true)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
 
 	platformInit()
 
@@ -41,7 +52,7 @@ func main() {
 	if err != nil {
 		fatal("无法启动本地服务：%v", err)
 	}
-	s := &server{app: newApp(logPath), token: *token, port: l.Addr().(*net.TCPAddr).Port, logPath: logPath, webDir: *webDir, quit: make(chan struct{})}
+	s := &server{app: newApp(logPath), token: *token, port: l.Addr().(*net.TCPAddr).Port, logPath: logPath, webDir: *webDir, quit: make(chan struct{}), thumbs: newThumbCache(96 << 20)}
 	url := fmt.Sprintf("http://127.0.0.1:%d/#t=%s", s.port, s.token)
 
 	fmt.Println("==============================================")

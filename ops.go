@@ -269,6 +269,9 @@ func (a *App) Move(req MoveReq) (*OpResult, error) {
 			continue
 		}
 		t.treeMove(src, dst, it.isDir)
+		if it.isDir {
+			a.quick.rename(src, dst)
+		}
 		acts = append(acts, Action{Op: "move", From: src, To: dst, IsDir: it.isDir})
 		res.Done++
 	}
@@ -315,6 +318,9 @@ func (a *App) Rename(req RenameReq) (*OpResult, error) {
 		return nil, fmt.Errorf("重命名失败：%s", osErrText(err))
 	}
 	t.treeMove(src, dst, it.isDir)
+	if it.isDir {
+		a.quick.rename(src, dst)
+	}
 	a.hist.push(fmt.Sprintf("重命名 %s → %s", it.name, newName), []Action{{Op: "move", From: src, To: dst, IsDir: it.isDir}})
 	return &OpResult{Done: 1}, nil
 }
@@ -355,6 +361,7 @@ func (a *App) Mkdir(req MkdirReq) (*OpResult, error) {
 	parent.Dirs = append(parent.Dirs, d)
 	parent.addAgg(0, 0, 1)
 	t.register(d)
+	a.quick.add(p)
 	a.hist.push("新建文件夹 "+p, []Action{{Op: "mkdir", To: p, IsDir: true}})
 	return &OpResult{Done: 1, NewID: d.ID}, nil
 }
@@ -507,6 +514,9 @@ func (a *App) BatchRename(req BatchRenameReq) (*BatchRenameResult, error) {
 			continue
 		}
 		t.treeMove(p.src, p.dst, p.it.isDir)
+		if p.it.isDir {
+			a.quick.rename(p.src, p.dst)
+		}
 		acts = append(acts, Action{Op: "move", From: p.src, To: p.dst, IsDir: p.it.isDir})
 		res.Done++
 	}
@@ -576,6 +586,9 @@ func (a *App) Undo() (*OpResult, string, error) {
 			continue
 		}
 		t.treeMove(m.tmp, act.From, act.IsDir)
+		if act.IsDir {
+			a.quick.rename(act.To, act.From)
+		}
 		undone = append(undone, Action{Op: "move", From: act.To, To: act.From, IsDir: act.IsDir})
 		res.Done++
 	}
@@ -597,11 +610,122 @@ func (a *App) Undo() (*OpResult, string, error) {
 				t.unregister(d)
 			}
 		}
+		a.quick.removeUnder(act.To)
 		undone = append(undone, Action{Op: "rmdir", To: act.To, IsDir: true})
 		res.Done++
 	}
 	a.hist.logUndo(b, undone)
 	return res, b.Desc, nil
+}
+
+// ---------------------------------------------------------------- 删除（移到回收站）
+
+type DeleteReq struct {
+	Items []Ref  `json:"items"`
+	Query *Query `json:"query"`
+}
+
+// trashFunc 把文件移到回收站；测试时替换为假的回收站。
+var trashFunc = trashPaths
+
+// treeRemove 在文件系统删除 p 之后，把它从内存中的树里去掉。调用者持有写锁。
+func (t *Tree) treeRemove(p string, isDir bool) {
+	parent := t.lookupDir(filepath.Dir(p))
+	if parent == nil {
+		return
+	}
+	name := filepath.Base(p)
+	if isDir {
+		if d := parent.childDir(name); d != nil {
+			parent.removeDir(d)
+			parent.addAgg(-d.Size, -d.NFiles, -(d.NDirs + 1))
+			t.unregister(d)
+		}
+		return
+	}
+	if i := parent.fileIndex(name); i >= 0 {
+		f := parent.Files[i]
+		parent.Files = append(parent.Files[:i], parent.Files[i+1:]...)
+		parent.addAgg(-f.Size, -1, 0)
+	}
+}
+
+// Delete 把选中的文件/文件夹移到回收站（不会永久删除）。回收站中的文件可以在系统回收站里还原。
+func (a *App) Delete(req DeleteReq) (*OpResult, error) {
+	t := a.tree
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	defer t.version.Add(1)
+	items, err := t.resolve(req.Items, req.Query)
+	if err != nil {
+		return nil, err
+	}
+	deleting := map[*Dir]bool{}
+	for _, it := range items {
+		if it.isDir {
+			deleting[it.dir] = true
+		}
+	}
+	coveredBy := func(d *Dir) bool {
+		for p := d; p != nil; p = p.Parent {
+			if deleting[p] {
+				return true
+			}
+		}
+		return false
+	}
+	type target struct {
+		path, name string
+		isDir      bool
+	}
+	res := &OpResult{}
+	var targets []target
+	for _, it := range items {
+		if it.isDir && coveredBy(it.dir.Parent) || !it.isDir && coveredBy(it.dir) {
+			continue
+		}
+		if it.isDir && it.dir == t.root {
+			res.fail("不能删除扫描的根文件夹")
+			continue
+		}
+		p := it.path(t)
+		if err := t.checkProtected(p); err != nil {
+			res.fail("%v", err)
+			continue
+		}
+		if err := trashSupported(p); err != nil {
+			res.fail("“%s”：%v", it.name, err)
+			continue
+		}
+		targets = append(targets, target{p, it.name, it.isDir})
+	}
+	if len(targets) == 0 {
+		return res, nil
+	}
+	paths := make([]string, len(targets))
+	for i, tg := range targets {
+		paths[i] = tg.path
+	}
+	terr := trashFunc(paths)
+	var acts []Action
+	for _, tg := range targets {
+		if exists(tg.path) {
+			if terr != nil {
+				res.fail("删除“%s”失败：%v", tg.name, terr)
+			} else {
+				res.fail("删除“%s”失败", tg.name)
+			}
+			continue
+		}
+		t.treeRemove(tg.path, tg.isDir)
+		if tg.isDir {
+			a.quick.removeUnder(tg.path)
+		}
+		acts = append(acts, Action{Op: "trash", To: tg.path, IsDir: tg.isDir})
+		res.Done++
+	}
+	a.hist.logOnly(fmt.Sprintf("删除（移到回收站）%d 项", len(acts)), acts)
+	return res, nil
 }
 
 func osErrText(err error) string {

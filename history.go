@@ -52,6 +52,16 @@ func (h *History) push(desc string, acts []Action) {
 	h.write(b.Time, desc, acts)
 }
 
+// logOnly 只写日志、不进入撤销列表（用于移到回收站等无法在程序内撤销的操作）。
+func (h *History) logOnly(desc string, acts []Action) {
+	if len(acts) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.write(time.Now(), desc, acts)
+}
+
 func (h *History) pop() *Batch {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -99,6 +109,8 @@ func (h *History) write(tm time.Time, desc string, acts []Action) {
 			fmt.Fprintf(f, "    %s\r\n      → %s\r\n", a.From, a.To)
 		case "mkdir":
 			fmt.Fprintf(f, "    新建 %s\r\n", a.To)
+		case "trash":
+			fmt.Fprintf(f, "    移到回收站 %s\r\n", a.To)
 		case "rmdir":
 			fmt.Fprintf(f, "    删除空文件夹 %s\r\n", a.To)
 		}

@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ type server struct {
 	logPath string
 	webDir  string
 	quit    chan struct{}
+	thumbs  *thumbCache
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -98,6 +100,7 @@ func (s *server) handler() http.Handler {
 			cats = append(cats, cat{c.Key, c.Name, c.Color, c.Exts})
 		}
 		st["categories"] = cats
+		st["thumbExts"] = thumbExtList()
 		if t.root != nil {
 			st["root"] = map[string]any{
 				"id": t.root.ID, "path": t.rootPath, "size": t.root.Size, "nFiles": t.root.NFiles,
@@ -360,6 +363,115 @@ func (s *server) handler() http.Handler {
 			return nil, errors.New("还没有任何操作记录")
 		}
 		return map[string]bool{"ok": true}, revealPath(s.logPath)
+	})
+
+	api("POST /api/delete", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var req DeleteReq
+		if err := readJSON(r, &req); err != nil {
+			return nil, err
+		}
+		return s.app.Delete(req)
+	})
+
+	// 最近新建的文件夹（只返回当前扫描范围内仍然存在的）
+	api("GET /api/quick", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		type quickInfo struct {
+			ID     int    `json:"id"`
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			Parent string `json:"parent"`
+			Size   int64  `json:"size"`
+			NFiles int    `json:"nFiles"`
+		}
+		out := []quickInfo{}
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+		for _, p := range s.app.quick.list() {
+			d := t.lookupDir(p)
+			if d == nil || d == t.root {
+				continue
+			}
+			out = append(out, quickInfo{ID: d.ID, Name: d.Name, Path: t.pathOf(d), Parent: relPath(t.root, d.Parent), Size: d.Size, NFiles: d.NFiles})
+			if len(out) >= 8 {
+				break
+			}
+		}
+		return out, nil
+	})
+
+	api("POST /api/quick/add", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var req struct {
+			ID int `json:"id"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			return nil, err
+		}
+		t.mu.RLock()
+		d := t.dirs[req.ID]
+		var p string
+		if d != nil {
+			p = t.pathOf(d)
+		}
+		t.mu.RUnlock()
+		if d == nil {
+			return nil, errors.New("文件夹不存在")
+		}
+		s.app.quick.add(p)
+		return map[string]bool{"ok": true}, nil
+	})
+
+	api("POST /api/quick/remove", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			return nil, err
+		}
+		s.app.quick.remove(req.Path)
+		return map[string]bool{"ok": true}, nil
+	})
+
+	// 缩略图：<img> 标签无法附带请求头，因此令牌通过网址参数 t 传递。
+	mux.HandleFunc("GET /api/thumb", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("t") != s.token && r.Header.Get("X-Token") != s.token {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		d, _ := strconv.Atoi(q.Get("d"))
+		name := q.Get("n")
+		size, _ := strconv.Atoi(q.Get("s"))
+		size = max(32, min(size, 320))
+		t.mu.RLock()
+		dir := t.dirs[d]
+		var path string
+		if dir != nil && dir.fileIndex(name) >= 0 {
+			path = filepath.Join(t.pathOf(dir), name)
+		}
+		t.mu.RUnlock()
+		if path == "" {
+			http.NotFound(w, r)
+			return
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		key := fmt.Sprintf("%s|%d|%d|%d", path, size, fi.ModTime().UnixNano(), fi.Size())
+		data, ok := s.thumbs.get(key)
+		if !ok {
+			data, _ = makeThumb(path, extOf(name), size)
+			s.thumbs.put(key, data)
+		}
+		if data == nil {
+			w.Header().Set("Cache-Control", "private, max-age=600")
+			http.Error(w, "no thumbnail", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(data)
 	})
 
 	api("POST /api/quit", func(w http.ResponseWriter, r *http.Request) (any, error) {

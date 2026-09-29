@@ -55,7 +55,12 @@
         <button class="btn" id="btnRename" disabled title="重命名 (F2)">重命名</button>
         <button class="btn" id="btnBatchRename" disabled title="按规则一次重命名多个文件">批量重命名</button>
         <button class="btn" id="btnReveal" disabled title="在资源管理器中显示">在资源管理器中显示</button>
+        <button class="btn danger" id="btnDelete" disabled title="把选中的项目移到回收站 (Delete)">删除</button>
         <div class="spacer"></div>
+        <div class="seg" id="viewSeg" title="切换列表或缩略图显示">
+          <button data-v="list" class="on">列表</button>
+          <button data-v="grid">缩略图</button>
+        </div>
         <div class="seg" id="scopeSeg" title="只看当前这一层，还是把所有子文件夹里的文件一起列出来">
           <button data-v="0" class="on">当前文件夹</button>
           <button data-v="1">含所有子文件夹</button>
@@ -80,6 +85,21 @@
           </thead>
           <tbody id="rows"></tbody>
         </table>
+        <div class="gridbar hidden" id="gridbar">
+          <label class="check"><input type="checkbox" id="gridCheckAll"> 全选</label>
+          <div class="spacer"></div>
+          <span class="muted small">排序</span>
+          <select id="sortSel">
+            <option value="name:0">名称（A→Z）</option>
+            <option value="name:1">名称（Z→A）</option>
+            <option value="size:1">大小（大→小）</option>
+            <option value="size:0">大小（小→大）</option>
+            <option value="mtime:1">修改时间（新→旧）</option>
+            <option value="mtime:0">修改时间（旧→新）</option>
+            <option value="type:0">类型</option>
+          </select>
+        </div>
+        <div id="grid" class="grid hidden"></div>
         <div id="listEmpty" class="empty hidden"></div>
         <div id="listMore" class="more hidden"></div>
       </div>
@@ -93,6 +113,13 @@
         <span class="muted small" id="statsScope"></span>
       </div>
       <div class="scroll stats-body" id="stats"></div>
+      <div class="quick-sec">
+        <div class="pane-head">
+          <span class="pane-title">最近新建的文件夹</span>
+          <span class="muted small quick-hint">把文件拖到这里即可移动</span>
+        </div>
+        <div class="quick-list scroll" id="quick"></div>
+      </div>
     </aside>
   </main>
 

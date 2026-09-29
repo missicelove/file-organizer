@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -166,4 +167,73 @@ func revealPath(p string) error {
 	cmd := exec.Command("explorer.exe")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `explorer.exe /select,"` + p + `"`}
 	return cmd.Start()
+}
+
+// ---------------------------------------------------------------- 回收站
+
+var procSHFileOperationW = windows.NewLazySystemDLL("shell32.dll").NewProc("SHFileOperationW")
+
+// SHFILEOPSTRUCTW（64 位下为自然对齐）
+type shFileOpStruct struct {
+	Hwnd                 uintptr
+	Func                 uint32
+	From                 *uint16
+	To                   *uint16
+	Flags                uint16
+	AnyOperationsAborted int32
+	NameMappings         uintptr
+	ProgressTitle        *uint16
+}
+
+const (
+	foDelete           = 3
+	fofSilent          = 0x0004
+	fofNoConfirmation  = 0x0010
+	fofAllowUndo       = 0x0040 // 移到回收站而不是永久删除
+	fofNoErrorUI       = 0x0400
+	fofWantNukeWarning = 0x4000 // 万一某个文件无法放入回收站（例如太大），由系统弹窗询问，而不是直接永久删除
+)
+
+// trashSupported 只允许在有回收站的本地磁盘上删除；U 盘、网络驱动器上删除的文件无法找回。
+func trashSupported(p string) error {
+	vol := filepath.VolumeName(p)
+	if vol == "" {
+		return errors.New("无法确定所在磁盘")
+	}
+	r16, err := windows.UTF16PtrFromString(vol + `\`)
+	if err != nil {
+		return err
+	}
+	switch windows.GetDriveType(r16) {
+	case windows.DRIVE_FIXED:
+		return nil
+	case windows.DRIVE_REMOVABLE:
+		return errors.New("U 盘等移动磁盘没有回收站，删除后无法找回，请在资源管理器中操作")
+	case windows.DRIVE_REMOTE:
+		return errors.New("网络驱动器没有回收站，删除后无法找回，请在资源管理器中操作")
+	}
+	return errors.New("这个磁盘不支持回收站，请在资源管理器中操作")
+}
+
+// trashPaths 把文件或文件夹移到 Windows 回收站。
+func trashPaths(paths []string) error {
+	var from []uint16
+	for _, p := range paths {
+		u, err := windows.UTF16FromString(p) // 自带结尾的 0
+		if err != nil {
+			return err
+		}
+		from = append(from, u...)
+	}
+	from = append(from, 0) // 列表以两个 0 结尾
+	op := shFileOpStruct{Func: foDelete, From: &from[0],
+		Flags: fofAllowUndo | fofNoConfirmation | fofSilent | fofNoErrorUI | fofWantNukeWarning}
+	r, _, _ := procSHFileOperationW.Call(uintptr(unsafe.Pointer(&op)))
+	if r != 0 {
+		return fmt.Errorf("回收站操作失败（错误代码 %d）", r)
+	}
+	if op.AnyOperationsAborted != 0 {
+		return errors.New("操作被取消")
+	}
+	return nil
 }

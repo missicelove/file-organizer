@@ -19,8 +19,9 @@ type Place struct {
 }
 
 type App struct {
-	tree *Tree
-	hist *History
+	tree  *Tree
+	hist  *History
+	quick *QuickStore
 
 	scanMu    sync.Mutex
 	cur       *scanner
@@ -31,8 +32,13 @@ type App struct {
 	scanning  bool
 }
 
+// newApp 创建程序状态；“最近新建的文件夹”保存在日志文件旁边。
 func newApp(logPath string) *App {
-	return &App{tree: &Tree{dirs: map[int]*Dir{}}, hist: newHistory(logPath)}
+	quickPath := ""
+	if logPath != "" {
+		quickPath = filepath.Join(filepath.Dir(logPath), "最近文件夹.json")
+	}
+	return &App{tree: &Tree{dirs: map[int]*Dir{}}, hist: newHistory(logPath), quick: loadQuick(quickPath)}
 }
 
 // normalizeInput 整理用户输入的路径：去掉引号（资源管理器“复制为路径”会带引号），补全盘符根目录。

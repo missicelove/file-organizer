@@ -71,3 +71,29 @@ func revealPath(p string) error {
 	}
 	return exec.Command("xdg-open", filepath.Dir(p)).Start()
 }
+
+// trashSupported 在 macOS/Linux 上总是允许（移到用户的废纸篓）。
+func trashSupported(p string) error { return nil }
+
+// trashPaths 把文件移到用户的废纸篓（仅用于开发调试）。
+func trashPaths(paths []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".Trash")
+	if runtime.GOOS != "darwin" {
+		dir = filepath.Join(home, ".local", "share", "Trash", "files")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, p := range paths {
+		dst := uniquePath(dir, filepath.Base(p), true)
+		if err := os.Rename(p, dst); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}

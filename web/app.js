@@ -91,12 +91,16 @@ const S = {
   places: [], os: '', undoable: 0, logPath: '',
   dragBody: null, dragCount: 0,
   restorePath: null, lastScan: null,
+  view: localStorage.getItem('fo-view') === 'grid' ? 'grid' : 'list',
+  thumbExts: new Set(), quick: [],
 };
+const trashName = () => S.os === 'windows' ? '回收站' : '废纸篓';
 
 function applyState(st) {
   S.os = st.os;
   S.logPath = st.logPath;
   S.undoable = st.undoable;
+  if (st.thumbExts) S.thumbExts = new Set(st.thumbExts);
   if (st.categories && !S.cats.length) {
     S.cats = st.categories;
     for (const c of S.cats) {
@@ -216,8 +220,17 @@ function showMenu(x, y, items) {
   for (const it of items) {
     if (it === '-') { menu.appendChild(document.createElement('hr')); continue; }
     if (!it) continue;
+    if (it.header) {
+      const h = document.createElement('div');
+      h.className = 'menu-head';
+      h.textContent = it.header;
+      menu.appendChild(h);
+      continue;
+    }
     const b = document.createElement('button');
-    b.innerHTML = `<span>${esc(it.label)}</span>${it.kbd ? `<kbd>${esc(it.kbd)}</kbd>` : ''}`;
+    b.innerHTML = `${it.icon || ''}<span>${esc(it.label)}</span>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}${it.kbd ? `<kbd>${esc(it.kbd)}</kbd>` : ''}`;
+    if (it.danger) b.classList.add('danger');
+    if (it.title) b.title = it.title;
     b.disabled = !!it.disabled;
     b.onclick = () => { hideMenu(); it.action(); };
     menu.appendChild(b);
@@ -354,6 +367,7 @@ async function enterApp(st) {
   }
   await refreshTree();
   await openDir(target);
+  loadQuick();
 }
 
 $('#btnRescan').onclick = () => {
@@ -512,8 +526,12 @@ $('#tree').addEventListener('contextmenu', e => {
     { label: '重命名…', disabled: isRoot, action: () => renameDirPrompt(id, name) },
     { label: '移动到…', disabled: isRoot, action: () => openMoveDialog({ body: { items: [{ d: id }] }, count: 1, what: `文件夹“${name}”` }) },
     '-',
+    { label: '添加到最近文件夹', disabled: isRoot, title: '显示在右下方，方便把文件拖进去', action: () => addQuick(id) },
+    '-',
     { label: '在资源管理器中显示', action: () => POST('/api/reveal', { item: { d: id } }).catch(toastErr) },
     { label: '复制路径', action: async () => copyText((await POST('/api/path', { item: { d: id } })).path) },
+    '-',
+    { label: `删除（移到${trashName()}）`, disabled: isRoot, danger: true, action: () => deleteDir(id, name) },
   ]);
 });
 $('#treeSort').addEventListener('click', async e => {
@@ -548,6 +566,7 @@ async function openDir(id, { keepView = false } = {}) {
   }
   clearSel();
   renderTree();
+  renderQuick();
   $('#listwrap').scrollTop = 0;
   await Promise.all([loadDirInfo(), loadList(), loadStats()]);
   if (S.curInfo) await revealInTree(S.curInfo.crumbs);
@@ -611,10 +630,41 @@ async function loadList(more = false, keepCount = false) {
   renderList(more ? offset : 0);
 }
 
+// ------------------------------------------------ 缩略图
+
+const hasThumb = r => r.k === 'f' && S.thumbExts.has(r.e);
+const thumbURL = (r, size) => `/api/thumb?d=${r.d}&n=${encodeURIComponent(r.n)}&s=${size}&v=${r.t}_${r.s}&t=${TOKEN}`;
+// 先显示格式标签，缩略图加载成功后再替换，失败则保留标签
+const THUMB_EVENTS = `onload="this.parentNode.classList.add('ok')" onerror="this.remove()"`;
+function fileIcon(r) {
+  if (!hasThumb(r)) return extBadge(r.e);
+  return `<span class="ticon">${extBadge(r.e)}<img loading="lazy" decoding="async" alt="" src="${thumbURL(r, 64)}" ${THUMB_EVENTS}></span>`;
+}
+
+function tileHTML(r, i) {
+  const sel = S.selAll || S.sel.has(rowKey(r));
+  const isDir = r.k === 'd';
+  let visual;
+  if (isDir) visual = `<svg viewBox="0 0 24 24" class="gfolder${r.err ? ' err' : ''}"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/></svg>`;
+  else visual = `<span class="gbadge">${extBadge(r.e)}</span>` + (hasThumb(r) ? `<img loading="lazy" decoding="async" alt="" src="${thumbURL(r, 200)}" ${THUMB_EVENTS}>` : '');
+  const meta = isDir ? `${r.nf ? fmtNum(r.nf) + ' 个文件' : '空文件夹'} · ${fmtSize(r.s)}` : fmtSize(r.s);
+  const tip = `${r.n}\n${meta}${r.t ? '\n修改时间：' + fmtTime(r.t) : ''}${S.recursive ? '\n位置：' + (r.loc || '（当前文件夹）') : ''}`;
+  return `<div class="row tile${sel ? ' sel' : ''}" data-i="${i}" draggable="true" title="${esc(tip)}">
+    <input type="checkbox" tabindex="-1"${sel ? ' checked' : ''}>
+    <div class="gthumb">${visual}</div>
+    <div class="gname"><span class="nm">${esc(r.n)}</span></div>
+    <div class="gmeta">${esc(meta)}</div>
+  </div>`;
+}
+
+const itemHTML = (r, i) => S.view === 'grid' ? tileHTML(r, i) : rowHTML(r, i);
+const itemsBox = () => S.view === 'grid' ? $('#grid') : $('#rows');
+const itemEl = i => $(`.row[data-i="${i}"]`, itemsBox());
+
 function rowHTML(r, i) {
   const sel = S.selAll || S.sel.has(rowKey(r));
   const isDir = r.k === 'd';
-  const icon = isDir ? (r.err ? ICON_FOLDER_ERR : ICON_FOLDER) : extBadge(r.e);
+  const icon = isDir ? (r.err ? ICON_FOLDER_ERR : ICON_FOLDER) : fileIcon(r);
   const cat = isDir ? null : catOfExt(r.e);
   const type = isDir ? `文件夹${r.nf ? ' · ' + fmtNum(r.nf) + ' 个文件' : ''}` : cat.name + (r.e ? ' · ' + r.e.toUpperCase() : '');
   const loc = r.loc || '（当前文件夹）';
@@ -629,13 +679,19 @@ function rowHTML(r, i) {
 }
 
 function renderList(from = 0) {
-  const tbody = $('#rows');
+  const grid = S.view === 'grid';
+  $('#list').classList.toggle('hidden', grid);
+  $('#grid').classList.toggle('hidden', !grid);
+  $('#gridbar').classList.toggle('hidden', !grid);
   $('#list').classList.toggle('recursive', S.recursive);
+  const box = itemsBox();
   if (from === 0) {
-    tbody.innerHTML = S.rows.map(rowHTML).join('');
+    (grid ? $('#rows') : $('#grid')).innerHTML = '';
+    box.innerHTML = S.rows.map(itemHTML).join('');
   } else {
-    tbody.insertAdjacentHTML('beforeend', S.rows.slice(from).map((r, j) => rowHTML(r, from + j)).join(''));
+    box.insertAdjacentHTML('beforeend', S.rows.slice(from).map((r, j) => itemHTML(r, from + j)).join(''));
   }
+  $('#sortSel').value = `${S.sort.key}:${S.sort.desc ? 1 : 0}`;
   $$('#list th.sortable').forEach(th => {
     const on = th.dataset.k === S.sort.key;
     th.innerHTML = th.textContent.replace(/[▲▼]/g, '').trim() + (on ? `<span class="arrow">${S.sort.desc ? '▼' : '▲'}</span>` : '');
@@ -781,20 +837,21 @@ function selSize() {
 }
 
 function syncSel() {
-  const trs = $('#rows').children;
-  for (const tr of trs) {
-    const r = S.rows[+tr.dataset.i];
+  for (const el of itemsBox().children) {
+    const r = S.rows[+el.dataset.i];
     if (!r) continue;
     const on = S.selAll || S.sel.has(rowKey(r));
-    tr.classList.toggle('sel', on);
-    const cb = tr.firstElementChild.firstElementChild;
+    el.classList.toggle('sel', on);
+    const cb = el.querySelector('input[type=checkbox]');
     if (cb) cb.checked = on;
   }
   const n = selCount();
-  const all = $('#checkAll');
-  all.checked = n > 0 && n >= S.rows.length;
-  all.indeterminate = n > 0 && n < S.rows.length;
+  for (const all of [$('#checkAll'), $('#gridCheckAll')]) {
+    all.checked = n > 0 && n >= S.rows.length;
+    all.indeterminate = n > 0 && n < S.rows.length;
+  }
   $('#btnMove').disabled = !n;
+  $('#btnDelete').disabled = !n;
   $('#btnBatchRename').disabled = !n;
   $('#btnRename').disabled = n !== 1 || S.selAll;
   $('#btnReveal').disabled = n !== 1 || S.selAll;
@@ -823,12 +880,17 @@ $('#selbanner').addEventListener('click', e => {
   if (!b) return;
   if (b.dataset.a === 'all') { S.selAll = true; syncSel(); } else clearSel();
 });
-$('#checkAll').addEventListener('change', e => { if (e.target.checked) selectAllLoaded(); else clearSel(); });
+for (const id of ['#checkAll', '#gridCheckAll']) $(id).addEventListener('change', e => { if (e.target.checked) selectAllLoaded(); else clearSel(); });
 
-const rowsEl = $('#rows');
+const rowsEl = $('#listwrap');
 rowsEl.addEventListener('click', e => {
-  const tr = e.target.closest('tr.row');
-  if (!tr || e.target.closest('.rename-input')) return;
+  const tr = e.target.closest('.row');
+  if (!tr) {
+    // 点击空白处取消选择
+    if (!e.target.closest('thead, .gridbar, .rename-input') && (e.target === rowsEl || e.target.closest('#grid, #listEmpty, #listMore'))) clearSel();
+    return;
+  }
+  if (e.target.closest('.rename-input')) return;
   const i = +tr.dataset.i, r = S.rows[i];
   if (e.target.matches('input[type=checkbox]')) { toggleSel(i); return; }
   if (e.target.closest('td.c-loc') && S.recursive) { openDir(r.k === 'd' ? r.p : r.d); return; }
@@ -837,17 +899,21 @@ rowsEl.addEventListener('click', e => {
   else selectOnly(i);
 });
 rowsEl.addEventListener('dblclick', e => {
-  const tr = e.target.closest('tr.row');
+  const tr = e.target.closest('.row');
   if (!tr || e.target.closest('.rename-input') || e.target.matches('input[type=checkbox]')) return;
   openRow(S.rows[+tr.dataset.i]);
 });
 rowsEl.addEventListener('contextmenu', e => {
-  const tr = e.target.closest('tr.row');
+  const tr = e.target.closest('.row');
   if (!tr) return;
   e.preventDefault();
   const i = +tr.dataset.i, r = S.rows[i];
   if (!S.selAll && !S.sel.has(rowKey(r))) selectOnly(i);
   const n = selCount(), single = n === 1 && !S.selAll;
+  const body = selBody();
+  // 最近新建的文件夹：排除正在被移动的文件夹本身
+  const moving = new Set(S.selAll ? [] : selectedRows().filter(x => x.k === 'd').map(x => x.d));
+  const quick = S.quick.filter(q => !moving.has(q.id)).slice(0, 6);
   showMenu(e.clientX, e.clientY, [
     { label: r.k === 'd' ? '打开文件夹' : '打开文件', kbd: 'Enter', disabled: !single, action: () => openRow(r) },
     S.recursive ? { label: '转到所在文件夹', disabled: !single, action: () => openDir(r.k === 'd' ? r.p : r.d) } : null,
@@ -857,6 +923,11 @@ rowsEl.addEventListener('contextmenu', e => {
     { label: '重命名', kbd: 'F2', disabled: !single, action: () => startRename(i) },
     { label: `批量重命名（${fmtNum(n)} 项）…`, action: openBatchRename },
     { label: `移动到…（${fmtNum(n)} 项）`, action: moveSelected },
+    quick.length ? '-' : null,
+    quick.length ? { header: '归类到最近新建的文件夹' } : null,
+    ...quick.map(q => ({ label: q.name, icon: ICON_FOLDER, sub: q.parent, title: q.path, action: () => doMove(body, q.id) })),
+    '-',
+    { label: `删除（移到${trashName()}）`, kbd: 'Del', danger: true, action: deleteSelected },
   ]);
 });
 
@@ -871,7 +942,7 @@ function revealRow(r) { POST('/api/reveal', { item: refOf(r) }).catch(toastErr);
 
 function startRename(i) {
   const r = S.rows[i];
-  const tr = $(`#rows tr.row[data-i="${i}"]`);
+  const tr = itemEl(i);
   if (!r || !tr) return;
   selectOnly(i);
   tr.draggable = false;
@@ -886,7 +957,7 @@ function startRename(i) {
   const dot = r.k === 'f' ? r.n.lastIndexOf('.') : -1;
   input.setSelectionRange(0, dot > 0 ? dot : r.n.length);
   let done = false;
-  const restore = () => { const t = document.createElement('template'); t.innerHTML = rowHTML(r, i).trim(); tr.replaceWith(t.content.firstChild); syncSel(); };
+  const restore = () => { const t = document.createElement('template'); t.innerHTML = itemHTML(r, i).trim(); tr.replaceWith(t.content.firstChild); syncSel(); };
   const finish = async commit => {
     if (done) return;
     done = true;
@@ -923,7 +994,7 @@ function renameSelected() {
 async function afterChange(opts = {}) {
   await refreshState().catch(() => {});
   try { await loadDirInfo(); } catch { await openDir(S.root.id); return; }
-  await Promise.all([loadList(false, true), loadStats(), refreshTree()]);
+  await Promise.all([loadList(false, true), loadStats(), refreshTree(), loadQuick()]);
   if (opts.reselect) {
     const i = S.rows.findIndex(r => r.k === opts.reselect.k && r.d === opts.reselect.d && (r.k === 'd' || r.n === opts.reselect.n));
     if (i >= 0) selectOnly(i); else clearSel();
@@ -1055,6 +1126,10 @@ function moveSelected() {
 }
 
 async function openMoveDialog({ body, count, size, what, suggestName }) {
+  // 核对“最近移动到”的文件夹是否还在（可能已被移动、改名或删除）
+  S.recent = (await Promise.all(S.recent.map(r => GET('/api/locate?path=' + encodeURIComponent(r.path))
+    .then(x => x.id ? { id: x.id, path: r.path } : null).catch(() => null)))).filter(Boolean);
+  const recent = S.recent.filter(r => !S.quick.some(q => q.id === r.id));
   const el = document.createElement('div');
   el.innerHTML = `
     <div style="margin-bottom:10px">把 <b>${esc(what)}</b>${size ? `（${fmtNum(count)} 项，${fmtSize(size)}）` : ''} 移动到：</div>
@@ -1063,7 +1138,8 @@ async function openMoveDialog({ body, count, size, what, suggestName }) {
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn small" data-a="new">＋ 在所选文件夹中新建文件夹…</button>
     </div>
-    ${S.recent.length ? `<div class="hint" style="margin-top:12px">最近使用：</div><div class="recent">${S.recent.map(r => `<button class="btn small" data-rid="${r.id}" title="${esc(r.path)}">${esc(r.path)}</button>`).join('')}</div>` : ''}
+    ${S.quick.length ? `<div class="hint" style="margin-top:12px">最近新建的文件夹：</div><div class="recent">${S.quick.map(q => `<button class="btn small" data-rid="${q.id}" title="${esc(q.path)}">📁 ${esc(q.name)}</button>`).join('')}</div>` : ''}
+    ${recent.length ? `<div class="hint" style="margin-top:12px">最近移动到：</div><div class="recent">${recent.map(r => `<button class="btn small" data-rid="${r.id}" title="${esc(r.path)}">${esc(r.path)}</button>`).join('')}</div>` : ''}
     <div class="radios">
       <label><input type="radio" name="conflict" value="rename" checked> 遇到同名文件时自动改名（例如“报告 (1).docx”），不会覆盖任何文件</label>
       <label><input type="radio" name="conflict" value="skip"> 遇到同名文件时跳过，保留在原位置</label>
@@ -1210,6 +1286,82 @@ function openBatchRename() {
   setTimeout(() => { const t = $('[data-f=template]', el); t.focus(); t.select(); }, 0);
 }
 
+// ------------------------------------------------ 删除（移到回收站）
+
+async function deleteSelected() {
+  const n = selCount();
+  if (!n) return;
+  const body = selBody();
+  const rows = selectedRows();
+  const names = S.selAll ? [] : rows.slice(0, 8).map(r => (r.k === 'd' ? '📁 ' : '• ') + r.n);
+  const hasDir = (S.selAll ? S.rows : rows).some(r => r.k === 'd');
+  const msg = `确定要把这 ${fmtNum(n)} 项（${fmtSize(selSize())}）移到${trashName()}吗？\n\n` +
+    (names.length ? names.join('\n') + (n > names.length ? `\n……等 ${fmtNum(n)} 项` : '') + '\n\n' : '') +
+    (hasDir ? '文件夹会连同里面的所有内容一起移到' + trashName() + '。\n' : '') +
+    `删除后可以在${trashName()}中还原。`;
+  if (!(await confirmDlg('删除', msg, `移到${trashName()}`, true))) return;
+  await doDelete(body);
+}
+
+async function deleteDir(id, name) {
+  const msg = `确定要把文件夹“${name}”连同里面的所有内容移到${trashName()}吗？\n\n删除后可以在${trashName()}中还原。`;
+  if (!(await confirmDlg('删除文件夹', msg, `移到${trashName()}`, true))) return;
+  await doDelete({ items: [{ d: id }] });
+}
+
+async function doDelete(body) {
+  await busy(async () => {
+    try {
+      const res = await POST('/api/delete', body);
+      if (res.done) toast(`已将 ${fmtNum(res.done)} 项移到${trashName()}，需要时可以在${trashName()}中还原`);
+      const errs = res.errors || [];
+      if (errs.length) toast(`${errs.length} 项没有删除`, { err: true, action: '查看原因', onAction: () => errorListDlg('以下项目没有删除', errs) });
+      await afterChange();
+    } catch (e) { toastErr(e); }
+  });
+}
+
+// ------------------------------------------------ 最近新建的文件夹
+
+async function loadQuick() {
+  try { S.quick = await GET('/api/quick'); } catch { S.quick = []; }
+  renderQuick();
+}
+
+function renderQuick() {
+  const box = $('#quick');
+  if (!S.quick.length) {
+    box.innerHTML = '<div class="quick-empty">用本程序新建的文件夹会出现在这里，方便把文件直接拖进去归类。也可以在左侧文件夹上右键，选择“添加到最近文件夹”。</div>';
+    return;
+  }
+  box.innerHTML = S.quick.map(q => `<div class="quick-item${q.id === S.cur ? ' cur' : ''}" data-id="${q.id}" title="${esc(q.path)}\n单击打开；把文件拖到这里即可移动进去">
+    ${ICON_FOLDER}
+    <div class="qtext"><div class="qname">${esc(q.name)}</div><div class="qpath">${esc(q.parent || '（根目录）')}</div></div>
+    <span class="qsize">${fmtSize(q.size)}</span>
+    <button class="qx" data-path="${esc(q.path)}" title="从这个列表中移除（不会删除文件夹）">×</button>
+  </div>`).join('');
+}
+
+$('#quick').addEventListener('click', async e => {
+  const x = e.target.closest('.qx');
+  if (x) {
+    e.stopPropagation();
+    await POST('/api/quick/remove', { path: x.dataset.path }).catch(toastErr);
+    loadQuick();
+    return;
+  }
+  const it = e.target.closest('.quick-item');
+  if (it) openDir(+it.dataset.id);
+});
+
+async function addQuick(id) {
+  try {
+    await POST('/api/quick/add', { id });
+    await loadQuick();
+    toast('已添加到“最近新建的文件夹”');
+  } catch (e) { toastErr(e); }
+}
+
 async function undo() {
   if (!S.undoable) { toast('没有可以撤销的操作'); return; }
   await busy(async () => {
@@ -1250,7 +1402,7 @@ function setDragBadge(text) {
 }
 
 rowsEl.addEventListener('dragstart', e => {
-  const tr = e.target.closest('tr.row');
+  const tr = e.target.closest('.row');
   if (!tr) return;
   const i = +tr.dataset.i, r = S.rows[i];
   if (!S.selAll && !S.sel.has(rowKey(r))) selectOnly(i);
@@ -1277,9 +1429,14 @@ document.addEventListener('dragend', () => {
 });
 
 function dropTarget(e) {
-  const t = e.target.closest('#tree .trow, .crumb, #rows tr.row');
+  const t = e.target.closest('#tree .trow, .crumb, #listwrap .row, .quick-item');
   if (!t) return null;
-  if (t.matches('tr.row')) {
+  if (t.matches('.quick-item')) {
+    const id = +t.dataset.id;
+    if (S.dragKeys.has('d:' + id)) return null;
+    return { el: t, id, name: $('.qname', t).textContent };
+  }
+  if (t.matches('.row')) {
     const r = S.rows[+t.dataset.i];
     if (!r || r.k !== 'd' || S.dragKeys.has(rowKey(r))) return null;
     return { el: t, id: r.d, name: r.n };
@@ -1320,6 +1477,23 @@ $('#btnMove').onclick = moveSelected;
 $('#btnRename').onclick = renameSelected;
 $('#btnBatchRename').onclick = openBatchRename;
 $('#btnReveal').onclick = () => { const r = selectedRows()[0]; if (r) revealRow(r); };
+$('#btnDelete').onclick = () => deleteSelected();
+function syncViewSeg() { $$('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view)); }
+$('#viewSeg').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || b.dataset.v === S.view) return;
+  S.view = b.dataset.v;
+  localStorage.setItem('fo-view', S.view);
+  syncViewSeg();
+  renderList();
+});
+syncViewSeg();
+$('#sortSel').addEventListener('change', e => {
+  const [key, desc] = e.target.value.split(':');
+  S.sort = { key, desc: desc === '1' };
+  clearSel();
+  loadList();
+});
 $('#btnUndo').onclick = undo;
 $('#btnStats').onclick = () => document.body.classList.toggle('stats-open');
 $('#btnHistory').onclick = openHistory;
@@ -1342,19 +1516,31 @@ document.addEventListener('keydown', e => {
   if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); }
   else if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); selectAllLoaded(); }
   else if (e.key === 'F2') { e.preventDefault(); renameSelected(); }
+  else if (e.key === 'Delete') { e.preventDefault(); deleteSelected(); }
   else if (e.key === 'Enter') {
     if (e.target instanceof Element && e.target.closest('button')) return; // 让按钮自己处理回车
     if (selCount() === 1 && !S.selAll) openRow(selectedRows()[0]);
   }
   else if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) { e.preventDefault(); goUp(); }
   else if (e.key === 'Escape') clearSel();
-  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+  else if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    const grid = S.view === 'grid';
+    if (!grid && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
     e.preventDefault();
     if (!S.rows.length) return;
-    let i = S.anchor < 0 ? -1 : S.anchor;
-    i = e.key === 'ArrowDown' ? Math.min(S.rows.length - 1, i + 1) : Math.max(0, i - 1);
+    let step = 1;
+    if (grid && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      // 网格中上下移动一整行：计算每行有几个
+      const tiles = $('#grid').children;
+      step = 0;
+      while (step < tiles.length && tiles[step].offsetTop === tiles[0].offsetTop) step++;
+      step = Math.max(1, step);
+    }
+    const fwd = e.key === 'ArrowDown' || e.key === 'ArrowRight';
+    let i = S.anchor < 0 ? (fwd ? -1 : S.rows.length) : S.anchor;
+    i = fwd ? Math.min(S.rows.length - 1, i + step) : Math.max(0, i - step);
     if (e.shiftKey && S.anchor >= 0) { const a = S.anchor; selectRange(i); S.anchor = a; } else selectOnly(i);
-    const tr = $(`#rows tr.row[data-i="${i}"]`);
+    const tr = itemEl(i);
     if (tr) tr.scrollIntoView({ block: 'nearest' });
   }
 });

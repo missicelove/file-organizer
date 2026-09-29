@@ -42,6 +42,18 @@ jobs:
           $mv = Invoke-RestMethod "$base/api/move" -Method Post -Headers $h -ContentType 'application/json' -Body (@{ query = @{ dir = $st.root.id; recursive = $true; cat = 'image' }; target = $mk.newId } | ConvertTo-Json -Depth 5)
           if ($mv.done -ne 1) { throw "移动失败：$($mv | ConvertTo-Json)" }
           if (-not (Test-Path "$root\图片\照片.jpg")) { throw "文件没有移动到位" }
+          # 缩略图：放一张真实的 PNG，重新扫描后请求缩略图
+          [IO.File]::WriteAllBytes("$root\图片\小图.png", [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
+          Invoke-RestMethod "$base/api/scan" -Method Post -Headers $h -ContentType 'application/json' -Body (@{ path = $root; skipHidden = $true } | ConvertTo-Json)
+          do { Start-Sleep -Milliseconds 200; $st = Invoke-RestMethod "$base/api/state" -Headers $h } while ($st.scan.running)
+          $pic = (Invoke-RestMethod "$base/api/children?id=$($st.root.id)" -Headers $h) | Where-Object { $_.name -eq '图片' }
+          $th = Invoke-WebRequest "$base/api/thumb?d=$($pic.id)&n=$([uri]::EscapeDataString('小图.png'))&s=64&t=abc123"
+          if ($th.StatusCode -ne 200 -or $th.Headers['Content-Type'] -notmatch 'image/jpeg') { throw "缩略图失败" }
+          # 删除：移到回收站
+          $del = Invoke-RestMethod "$base/api/delete" -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes((@{ items = @(@{ d = $pic.id; n = '照片.jpg' }) } | ConvertTo-Json -Depth 5)))
+          if ($del.done -ne 1 -or (Test-Path "$root\图片\照片.jpg")) { throw "删除失败：$($del | ConvertTo-Json)" }
+          $quick = Invoke-RestMethod "$base/api/quick" -Headers $h
+          if (@($quick).Count -lt 1) { throw "最近新建的文件夹为空" }
           $places = Invoke-RestMethod "$base/api/places" -Headers $h
           $places | Format-Table
           Invoke-RestMethod "$base/api/quit" -Method Post -Headers $h

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,4 +165,49 @@ func TestWinMoveReadOnlyAndLockedFiles(t *testing.T) {
 	t.Logf("locked file message: %s", res.Errors[0])
 	mustExist(t, locked)
 	assertTreeMatchesDisk(t, a)
+}
+
+func TestWinShellThumbnail(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "红色.png")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	png.Encode(f, solidImage(300, 150, color.RGBA{220, 20, 20, 255}))
+	f.Close()
+	img, err := platformThumb(p, 96)
+	if err != nil {
+		t.Skipf("此环境没有系统缩略图：%v", err)
+	}
+	b := img.Bounds()
+	t.Logf("shell thumbnail %v, center %v", b, img.At(b.Dx()/2, b.Dy()/2))
+	if b.Dx() == 0 || b.Dy() == 0 {
+		t.Fatal("empty thumbnail")
+	}
+	if !near(img.At(b.Dx()/2, b.Dy()/2), 220, 20, 20) {
+		t.Errorf("wrong colors (BGRA 转换有误?): %v", img.At(b.Dx()/2, b.Dy()/2))
+	}
+	// 经过 makeThumb 的完整流程（PNG 走程序自带解码）
+	if _, err := makeThumb(p, "png", 64); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWinRecycleBin(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "要删除的文件.txt")
+	d := filepath.Join(dir, "要删除的文件夹")
+	writeFile(t, f, 10)
+	writeFile(t, filepath.Join(d, "内部.txt"), 5)
+	if err := trashSupported(f); err != nil {
+		t.Fatalf("fixed drive should support recycle bin: %v", err)
+	}
+	if err := trashPaths([]string{f, d}); err != nil {
+		t.Fatal(err)
+	}
+	mustNotExist(t, f)
+	mustNotExist(t, d)
+	if trashSupported(`\\server\share\x.txt`) == nil {
+		t.Error("network path must be refused")
+	}
 }

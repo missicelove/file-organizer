@@ -54,7 +54,7 @@ func startTestServer(t *testing.T) (*apiClient, *server) {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(t.TempDir(), "log.txt")
-	s := &server{app: newApp(logPath), token: "abc123", port: l.Addr().(*net.TCPAddr).Port, logPath: logPath, quit: make(chan struct{})}
+	s := &server{app: newApp(logPath), token: "abc123", port: l.Addr().(*net.TCPAddr).Port, logPath: logPath, quit: make(chan struct{}), thumbs: newThumbCache(8 << 20)}
 	ts := &httptest.Server{Listener: l, Config: &http.Server{Handler: s.handler()}}
 	ts.Start()
 	t.Cleanup(ts.Close)
