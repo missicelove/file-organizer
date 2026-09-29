@@ -1,0 +1,54 @@
+# 在真实的 Windows 环境中运行全部测试，构建 exe，并启动 exe 做一次冒烟测试。
+name: Windows 测试与构建
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 代码检查
+        run: go vet ./...
+
+      - name: 单元测试（含 Windows 专用测试）
+        run: go test -v -count=1 ./...
+
+      - name: 构建 exe
+        run: go build -trimpath -ldflags "-s -w" -o dist/FileOrganizer.exe .
+
+      - name: 冒烟测试：启动 exe，扫描并移动文件
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force "$root\a\b\c" | Out-Null
+          Set-Content "$root\a\b\c\照片.jpg" "x"
+          Set-Content "$root\a\报告.docx" "y"
+          $p = Start-Process -FilePath dist\FileOrganizer.exe -ArgumentList '-no-browser','-port','17999','-token','abc123' -PassThru
+          Start-Sleep -Seconds 2
+          $h = @{ 'X-Token' = 'abc123' }
+          $base = 'http://127.0.0.1:17999'
+          Invoke-RestMethod "$base/api/scan" -Method Post -Headers $h -ContentType 'application/json' -Body (@{ path = $root; skipHidden = $true } | ConvertTo-Json)
+          do { Start-Sleep -Milliseconds 200; $st = Invoke-RestMethod "$base/api/state" -Headers $h } while ($st.scan.running)
+          if ($st.root.nFiles -ne 2) { throw "扫描结果不对：$($st.root.nFiles)" }
+          $mk = Invoke-RestMethod "$base/api/mkdir" -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes((@{ parent = $st.root.id; name = '图片' } | ConvertTo-Json)))
+          $mv = Invoke-RestMethod "$base/api/move" -Method Post -Headers $h -ContentType 'application/json' -Body (@{ query = @{ dir = $st.root.id; recursive = $true; cat = 'image' }; target = $mk.newId } | ConvertTo-Json -Depth 5)
+          if ($mv.done -ne 1) { throw "移动失败：$($mv | ConvertTo-Json)" }
+          if (-not (Test-Path "$root\图片\照片.jpg")) { throw "文件没有移动到位" }
+          $places = Invoke-RestMethod "$base/api/places" -Headers $h
+          $places | Format-Table
+          Invoke-RestMethod "$base/api/quit" -Method Post -Headers $h
+          Start-Sleep -Seconds 1
+          Write-Host "冒烟测试通过"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 文件整理助手-windows
+          path: dist/FileOrganizer.exe

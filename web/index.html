@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文件整理助手</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23e0a526' d='M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" class="brand-icon"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/></svg>
+      <span>文件整理助手</span>
+    </div>
+    <div class="root-info">
+      <span class="muted">正在整理</span>
+      <span id="rootPath" class="root-path"></span>
+      <button class="btn small" id="btnRescan" title="重新扫描当前文件夹，获取最新的文件情况">重新扫描</button>
+      <button class="btn small" id="btnChangeRoot">换个文件夹</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btnStats" title="显示/隐藏类型统计">类型统计</button>
+    <button class="btn" id="btnUndo" title="撤销上一步操作 (Ctrl+Z)" disabled>
+      <svg viewBox="0 0 24 24" class="ico"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>撤销
+    </button>
+    <button class="btn" id="btnHistory">操作记录</button>
+    <button class="btn ghost" id="btnQuit" title="关闭程序">退出</button>
+  </header>
+
+  <main class="panes">
+    <aside class="pane tree-pane">
+      <div class="pane-head">
+        <span class="pane-title">文件夹</span>
+        <div class="seg" id="treeSort">
+          <button data-v="size" class="on">按大小</button>
+          <button data-v="name">按名称</button>
+        </div>
+      </div>
+      <div id="tree" class="tree scroll"></div>
+    </aside>
+    <div class="splitter" data-for="tree"></div>
+
+    <section class="pane list-pane">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="toolbar">
+        <button class="btn" id="btnNewFolder" title="在当前文件夹中新建文件夹 (Ctrl+Shift+N)">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg>新建文件夹
+        </button>
+        <button class="btn primary" id="btnMove" disabled title="把选中的项目移动到其他文件夹">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M5 12h14M13 6l6 6-6 6"/></svg>移动到…
+        </button>
+        <button class="btn" id="btnRename" disabled title="重命名 (F2)">重命名</button>
+        <button class="btn" id="btnBatchRename" disabled title="按规则一次重命名多个文件">批量重命名</button>
+        <button class="btn" id="btnReveal" disabled title="在资源管理器中显示">在资源管理器中显示</button>
+        <div class="spacer"></div>
+        <div class="seg" id="scopeSeg" title="只看当前这一层，还是把所有子文件夹里的文件一起列出来">
+          <button data-v="0" class="on">当前文件夹</button>
+          <button data-v="1">含所有子文件夹</button>
+        </div>
+        <div class="search">
+          <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="search" type="search" placeholder="搜索文件名（含子文件夹）" autocomplete="off">
+        </div>
+      </div>
+      <div class="filterbar hidden" id="filterbar"></div>
+      <div class="listwrap scroll" id="listwrap">
+        <table class="list" id="list">
+          <thead>
+            <tr>
+              <th class="c-check"><input type="checkbox" id="checkAll" title="全选"></th>
+              <th class="c-name sortable" data-k="name">名称</th>
+              <th class="c-loc sortable" data-k="loc">所在位置</th>
+              <th class="c-type sortable" data-k="type">类型</th>
+              <th class="c-size sortable" data-k="size">大小</th>
+              <th class="c-time sortable" data-k="mtime">修改时间</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div id="listEmpty" class="empty hidden"></div>
+        <div id="listMore" class="more hidden"></div>
+      </div>
+      <div class="selbanner hidden" id="selbanner"></div>
+    </section>
+    <div class="splitter" data-for="stats"></div>
+
+    <aside class="pane stats-pane">
+      <div class="pane-head">
+        <span class="pane-title">类型统计</span>
+        <span class="muted small" id="statsScope"></span>
+      </div>
+      <div class="scroll stats-body" id="stats"></div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="selInfo"></span>
+    <div class="spacer"></div>
+    <span id="scanInfo" class="muted"></span>
+  </footer>
+</div>
+
+<!-- 欢迎 / 选择文件夹 / 扫描进度 -->
+<div id="welcome" class="welcome">
+  <div class="welcome-card">
+    <div class="welcome-head">
+      <svg viewBox="0 0 24 24" class="brand-icon big"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/></svg>
+      <div>
+        <h1>文件整理助手</h1>
+        <p class="muted">选择一个磁盘或文件夹，程序会扫描出完整的文件夹树和各类文件占用的空间，然后你就可以重命名、新建文件夹、把文件归类移动。</p>
+      </div>
+    </div>
+    <div id="welcomeForm">
+      <label class="field-label">要整理的磁盘或文件夹</label>
+      <div class="pathrow">
+        <input id="scanPath" type="text" placeholder="例如 D:\ 或 C:\Users\你的名字\Downloads" spellcheck="false">
+        <button class="btn" id="btnBrowse">浏览…</button>
+      </div>
+      <div class="places" id="places"></div>
+      <label class="check"><input type="checkbox" id="skipHidden" checked> 跳过隐藏文件和系统文件（推荐）</label>
+      <div class="welcome-actions">
+        <button class="btn ghost hidden" id="btnWelcomeBack">返回</button>
+        <button class="btn primary big" id="btnScan">开始扫描</button>
+      </div>
+      <div class="error hidden" id="welcomeErr"></div>
+    </div>
+    <div id="welcomeProgress" class="hidden">
+      <div class="progress-title">正在扫描 <b id="progPath"></b></div>
+      <div class="progress-bar"><div></div></div>
+      <div class="progress-stats">
+        <div><b id="progFiles">0</b><span>个文件</span></div>
+        <div><b id="progDirs">0</b><span>个文件夹</span></div>
+        <div><b id="progBytes">0 B</b><span>总大小</span></div>
+        <div><b id="progTime">0 秒</b><span>已用时间</span></div>
+      </div>
+      <div class="progress-current muted" id="progCurrent"></div>
+      <div class="welcome-actions"><button class="btn" id="btnCancelScan">取消</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div id="menu" class="menu hidden"></div>
+<div id="toasts" class="toasts"></div>
+<div id="offline" class="offline hidden">无法连接到“文件整理助手”程序，它可能已经被关闭。请重新运行程序后刷新本页面。</div>
+<div id="dragBadge" class="drag-badge"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

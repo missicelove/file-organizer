@@ -1,0 +1,5 @@
+# 编译产物（exe 通过 GitHub Releases 发布）
+dist/
+# 本机调试配置
+.claude/
+.DS_Store
